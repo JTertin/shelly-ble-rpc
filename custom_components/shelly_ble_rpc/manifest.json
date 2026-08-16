@@ -6,6 +6,9 @@
     "@jtertin"
   ],
   "config_flow": true,
+  "dependencies": [
+    "bluetooth"
+  ],
   "documentation": "https://github.com/jtertin/shelly-ble-rpc",
   "integration_type": "device",
   "iot_class": "local_polling",
