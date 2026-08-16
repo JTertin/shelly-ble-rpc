@@ -1,0 +1,50 @@
+name: Bug report
+description: Report a problem with the Shelly BLE RPC integration
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting an issue. Please provide enough information to reproduce the problem.
+  - type: input
+    id: ha_version
+    attributes:
+      label: Home Assistant version
+      placeholder: "2026.8.x"
+    validations:
+      required: true
+  - type: input
+    id: integration_version
+    attributes:
+      label: Shelly BLE RPC version
+      placeholder: "1.0.25"
+    validations:
+      required: true
+  - type: input
+    id: shelly_model
+    attributes:
+      label: Shelly model
+      placeholder: "Shelly 1PM Mini Gen4"
+    validations:
+      required: true
+  - type: input
+    id: firmware
+    attributes:
+      label: Shelly firmware version
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the expected behavior and what actually occurred.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Home Assistant logs
+      description: Remove secrets or other sensitive information before posting.
+      render: text

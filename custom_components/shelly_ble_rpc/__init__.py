@@ -1,0 +1,281 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+import logging
+
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+
+from .const import CONF_ADDRESS, PLATFORMS, CONF_PAIRING_REQUIRED
+from .coordinator import ShellyBleRpcCoordinator
+from .bluez_pairing import async_get_pairing_state
+from .rpc import ShellyBleRpcClient
+
+_LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class ShellyBleRpcRuntimeData:
+    """Runtime objects shared by Shelly BLE RPC platforms."""
+
+    client: ShellyBleRpcClient
+    coordinator: ShellyBleRpcCoordinator
+    device_info: dict
+    unpaired: bool = False
+
+
+type ShellyBleRpcConfigEntry = ConfigEntry[ShellyBleRpcRuntimeData]
+
+
+async def async_migrate_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+) -> bool:
+    """Migrate older Shelly BLE RPC config entries to the current schema."""
+    _LOGGER.info(
+        "Migrating Shelly BLE RPC config entry '%s' from version %s.%s",
+        entry.title,
+        entry.version,
+        entry.minor_version,
+    )
+
+    if entry.version > 2:
+        _LOGGER.error(
+            "Cannot migrate Shelly BLE RPC config entry '%s' from future "
+            "version %s",
+            entry.title,
+            entry.version,
+        )
+        return False
+
+    new_data = dict(entry.data)
+
+    if entry.version == 1:
+        # v1 entries stored two setup-time implementation details:
+        #
+        #   switch_id
+        #   pair
+        #
+        # v2 discovers switch components automatically from Shelly.GetStatus
+        # and always manages pairing automatically, so these fields are no
+        # longer required.
+        #
+        # They are safe to remove because neither value represents user data
+        # needed to identify the device.
+        new_data.pop("switch_id", None)
+        new_data.pop("pair", None)
+
+        hass.config_entries.async_update_entry(
+            entry,
+            data=new_data,
+            version=2,
+            minor_version=1,
+        )
+
+    elif entry.version == 2 and entry.minor_version < 1:
+        # Normalize any early v2 entries which may still contain the legacy
+        # fields from testing builds.
+        new_data.pop("switch_id", None)
+        new_data.pop("pair", None)
+
+        hass.config_entries.async_update_entry(
+            entry,
+            data=new_data,
+            version=2,
+            minor_version=1,
+        )
+
+    _LOGGER.info(
+        "Shelly BLE RPC config entry '%s' migration complete: version %s.%s",
+        entry.title,
+        entry.version,
+        entry.minor_version,
+    )
+    return True
+
+
+def _is_gatt_security_state_error(err: BaseException) -> bool:
+    """Return True only for the known post-unpair GATT 0x0E failure.
+
+    This is intentionally narrow so ordinary Bluetooth failures never trigger
+    pairing recovery.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = err
+
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+
+        message = str(current).lower()
+        if (
+            "unlikely error" in message
+            or "gatt protocol error: unlikely error" in message
+            or "bleakgattprotocolerrorcode.unlikely_error" in message
+        ):
+            return True
+
+        next_err = current.__cause__ or current.__context__
+        current = next_err if isinstance(next_err, BaseException) else None
+
+    return False
+
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ShellyBleRpcConfigEntry,
+) -> bool:
+    """Set up Shelly BLE RPC from a config entry."""
+    address = entry.data[CONF_ADDRESS]
+
+    client = ShellyBleRpcClient(
+        hass=hass,
+        address=address,
+        pair_on_connect=True,
+    )
+
+    coordinator = ShellyBleRpcCoordinator(
+        hass=hass,
+        client=client,
+        address=address,
+        name=entry.title,
+    )
+
+    # Determine BlueZ's actual pairing state before the first RPC.
+    #
+    # This is read-only. We do not delete or alter any bond here.
+    device_present, bluez_paired, bluez_bonded = await async_get_pairing_state(
+        address
+    )
+
+    _LOGGER.info(
+        "BlueZ state for '%s' (%s): present=%s, Paired=%s, Bonded=%s, "
+        "pairing_required=%s",
+        entry.title,
+        address,
+        device_present,
+        bluez_paired,
+        bluez_bonded,
+        entry.data.get(CONF_PAIRING_REQUIRED, False),
+    )
+
+    explicit_pair_required = bool(
+        entry.data.get(CONF_PAIRING_REQUIRED, False)
+        or (device_present and not bluez_paired and not bluez_bonded)
+    )
+
+    if explicit_pair_required:
+        # A configured entry with an actual BlueZ Device1 object that is
+        # explicitly unpaired/unbonded genuinely requires pairing. This also
+        # covers legacy entries unpaired before pairing_required was persisted.
+        if not entry.data.get(CONF_PAIRING_REQUIRED, False):
+            new_data = dict(entry.data)
+            new_data[CONF_PAIRING_REQUIRED] = True
+            hass.config_entries.async_update_entry(entry, data=new_data)
+            _LOGGER.info(
+                "Configured Shelly '%s' is present in BlueZ but unpaired/"
+                "unbonded; marked pairing_required",
+                entry.title,
+            )
+
+        _LOGGER.info(
+            "Config entry '%s' requires Bluetooth pairing; performing one "
+            "explicit pairing attempt",
+            entry.title,
+        )
+
+        try:
+            await client.pair_explicitly()
+            await coordinator.async_config_entry_first_refresh()
+        except Exception:
+            _LOGGER.info(
+                "Explicit re-pairing for '%s' did not complete; leaving "
+                "pairing_required set for a later Reload",
+                entry.title,
+            )
+            raise
+        else:
+            new_data = dict(entry.data)
+            new_data.pop(CONF_PAIRING_REQUIRED, None)
+            hass.config_entries.async_update_entry(entry, data=new_data)
+            _LOGGER.info(
+                "Explicit Bluetooth re-pairing completed for '%s'; cleared "
+                "pairing_required flag",
+                entry.title,
+            )
+    else:
+        # If BlueZ has no Device1 object yet, do not infer that the bond is
+        # stale. Home Assistant discovery may simply not have recreated the
+        # object yet. Likewise, ordinary timeouts remain non-destructive.
+        #
+        # Keep the narrowly targeted GATT 0x0E legacy fallback as an additional
+        # signal for asymmetric security state when BlueZ still reports a bond.
+        try:
+            await coordinator.async_config_entry_first_refresh()
+        except Exception as err:
+            if not _is_gatt_security_state_error(err):
+                raise
+
+            _LOGGER.warning(
+                "Initial RPC for '%s' reached the Shelly but failed with "
+                "GATT 0x0E/Unlikely Error; attempting one explicit Bluetooth "
+                "pairing operation for asymmetric bond recovery",
+                entry.title,
+            )
+
+            new_data = dict(entry.data)
+            new_data[CONF_PAIRING_REQUIRED] = True
+            hass.config_entries.async_update_entry(entry, data=new_data)
+
+            try:
+                await client.pair_explicitly()
+                await coordinator.async_config_entry_first_refresh()
+            except Exception:
+                _LOGGER.info(
+                    "Explicit pairing recovery for '%s' did not complete; "
+                    "pairing_required remains set for a later Reload",
+                    entry.title,
+                )
+                raise
+            else:
+                new_data = dict(entry.data)
+                new_data.pop(CONF_PAIRING_REQUIRED, None)
+                hass.config_entries.async_update_entry(entry, data=new_data)
+                _LOGGER.info(
+                    "Explicit Bluetooth pairing recovery completed for '%s'; "
+                    "cleared pairing_required flag",
+                    entry.title,
+                )
+
+    # Device info is mostly static. Read it once for proper device registry
+    # model/firmware metadata. A failure here should not throw away a working
+    # status connection.
+    try:
+        device_info = await client.get_device_info()
+    except Exception as err:
+        _LOGGER.warning("Unable to read Shelly device information: %s", err)
+        device_info = {}
+
+    entry.runtime_data = ShellyBleRpcRuntimeData(
+        client=client,
+        coordinator=coordinator,
+        device_info=device_info,
+    )
+
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    return True
+
+
+async def async_unload_entry(
+    hass: HomeAssistant,
+    entry: ShellyBleRpcConfigEntry,
+) -> bool:
+    """Unload a config entry and close any active BLE connection lease."""
+    unloaded = await hass.config_entries.async_unload_platforms(
+        entry,
+        PLATFORMS,
+    )
+
+    if unloaded:
+        await entry.runtime_data.client.async_shutdown()
+
+    return unloaded

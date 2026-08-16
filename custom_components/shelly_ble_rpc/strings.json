@@ -1,0 +1,117 @@
+{
+  "title": "Shelly BLE RPC",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add Shelly BLE Relay",
+        "description": "Select the Shelly Bluetooth device to add. If it is already bonded to Home Assistant, the existing bond will be validated automatically.",
+        "data": {
+          "name": "Name",
+          "address": "Bluetooth address"
+        },
+        "data_description": {
+          "address": "Select a discovered Shelly Bluetooth device. If the device is not already paired, you will be prompted to enable Bluetooth pairing mode."
+        }
+      },
+      "pairing": {
+        "title": "Bluetooth pairing required",
+        "description": "{device} ({address}) is not currently paired with Home Assistant.\n\nPut the Shelly into Bluetooth pairing mode. The pairing window lasts approximately 180 seconds.\n\nOnce pairing mode is active, select Retry pairing below. Use the X in the upper-left to cancel.",
+        "menu_options": {
+          "retry_pairing": "Retry pairing"
+        },
+        "menu_option_descriptions": {
+          "retry_pairing": "Attempt Bluetooth pairing with the Shelly now."
+        }
+      },
+      "pairing_failed": {
+        "title": "Bluetooth pairing failed",
+        "description": "Home Assistant could not pair with {device} ({address}).\n\nConfirm the Shelly is still in Bluetooth pairing mode and within Bluetooth range, then select Retry pairing.\n\nLast error: {error}",
+        "menu_options": {
+          "retry_pairing": "Retry pairing"
+        },
+        "menu_option_descriptions": {
+          "retry_pairing": "Try Bluetooth pairing again."
+        }
+      },
+      "retry_pairing": {
+        "title": "Retry pairing"
+      },
+      "retry_pairing_progress": {
+        "title": "Retrying Bluetooth pairing",
+        "description": "Connecting to {device} ({address}) and verifying Bluetooth RPC communication."
+      }
+    },
+    "error": {
+      "invalid_address": "Enter a Bluetooth MAC address in AA:BB:CC:DD:EE:FF format."
+    },
+    "abort": {
+      "already_configured": "This Bluetooth device is already configured.",
+      "missing_pending_device": "The pending Shelly device information was lost. Start the add-device flow again."
+    },
+    "progress": {
+      "retry_pairing": "Retrying Bluetooth pairing\u2026"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "power": {
+        "name": "Power"
+      },
+      "voltage": {
+        "name": "Voltage"
+      },
+      "frequency": {
+        "name": "Frequency"
+      },
+      "current": {
+        "name": "Current"
+      },
+      "energy": {
+        "name": "Energy"
+      },
+      "energy_returned": {
+        "name": "Energy returned"
+      },
+      "temperature": {
+        "name": "Temperature"
+      },
+      "signal_strength": {
+        "name": "Signal strength"
+      },
+      "uptime": {
+        "name": "Uptime"
+      }
+    },
+    "binary_sensor": {
+      "input_0": {
+        "name": "Input 0"
+      },
+      "overcurrent": {
+        "name": "Overcurrent"
+      },
+      "overheating": {
+        "name": "Overheating"
+      },
+      "overpowering": {
+        "name": "Overpowering"
+      },
+      "overvoltage": {
+        "name": "Overvoltage"
+      },
+      "cloud": {
+        "name": "Cloud"
+      },
+      "restart_required": {
+        "name": "Restart required"
+      }
+    },
+    "button": {
+      "restart": {
+        "name": "Restart"
+      },
+      "unpair_bluetooth": {
+        "name": "Unpair Bluetooth"
+      }
+    }
+  }
+}
