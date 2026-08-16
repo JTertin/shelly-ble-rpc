@@ -1,16 +1,15 @@
 {
   "domain": "shelly_ble_rpc",
   "name": "Shelly BLE RPC",
-  "version": "1.0.25",
-  "documentation": "https://github.com/jterting/shelly-ble-rpc",
-  "issue_tracker": "https://github.com/jtertin/shelly-ble-rpc/issues",
+  "bluetooth": [],
   "codeowners": [
     "@jtertin"
   ],
   "config_flow": true,
-  "dependencies": [
-    "bluetooth"
-  ],
+  "documentation": "https://github.com/jtertin/shelly-ble-rpc",
+  "integration_type": "device",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/jtertin/shelly-ble-rpc/issues",
   "requirements": [],
-  "iot_class": "local_polling"
+  "version": "1.0.25"
 }
