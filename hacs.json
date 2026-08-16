@@ -1,3 +1,4 @@
 {
-  "name": "Shelly BLE RPC"
+  "name": "Shelly BLE RPC",
+  "hide_default_branch": true
 }
