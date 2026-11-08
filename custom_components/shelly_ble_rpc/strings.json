@@ -4,7 +4,7 @@
     "step": {
       "user": {
         "title": "Add Shelly BLE Relay",
-        "description": "Select the Shelly Bluetooth device to add. If it is already bonded to Home Assistant, the existing bond will be validated automatically.",
+        "description": "Select the Shelly Bluetooth device to add. If it is already bonded to Home Assistant, the existing bond will be validated automatically. This works over a local Bluetooth adapter or an ESPHome Bluetooth proxy.",
         "data": {
           "name": "Name",
           "address": "Bluetooth address"
@@ -15,17 +15,17 @@
       },
       "pairing": {
         "title": "Bluetooth pairing required",
-        "description": "{device} ({address}) is not currently paired with Home Assistant.\n\nPut the Shelly into Bluetooth pairing mode. The pairing window lasts approximately 180 seconds.\n\nOnce pairing mode is active, select Retry pairing below. Use the X in the upper-left to cancel.",
+        "description": "A Bluetooth RPC connection to {device} ({address}) could not be validated.\n\nPut the Shelly into Bluetooth pairing mode. The pairing window lasts approximately 180 seconds.\n\nWith a local Bluetooth adapter, Home Assistant performs the pairing itself. With an ESPHome Bluetooth proxy, keep the Shelly close to the proxy and select Retry pairing: the proxy connects and builds the bond during the pairing window.\n\nSelect Retry pairing once pairing mode is active. Use the X in the upper-left to cancel.",
         "menu_options": {
           "retry_pairing": "Retry pairing"
         },
         "menu_option_descriptions": {
-          "retry_pairing": "Attempt Bluetooth pairing with the Shelly now."
+          "retry_pairing": "Attempt Bluetooth pairing with the Shelly now. With an ESPHome Bluetooth proxy, the proxy performs the bond during this attempt."
         }
       },
       "pairing_failed": {
         "title": "Bluetooth pairing failed",
-        "description": "Home Assistant could not pair with {device} ({address}).\n\nConfirm the Shelly is still in Bluetooth pairing mode and within Bluetooth range, then select Retry pairing.\n\nLast error: {error}",
+        "description": "Home Assistant could not pair with {device} ({address}).\n\nConfirm the Shelly is still in Bluetooth pairing mode and within reliable range of the active Bluetooth adapter or ESPHome Bluetooth proxy, then select Retry pairing.\n\n{hint}\n\nLast error: {error}",
         "menu_options": {
           "retry_pairing": "Retry pairing"
         },
@@ -38,7 +38,7 @@
       },
       "retry_pairing_progress": {
         "title": "Retrying Bluetooth pairing",
-        "description": "Connecting to {device} ({address}) and verifying Bluetooth RPC communication."
+        "description": "Connecting to {device} ({address}) and verifying Bluetooth RPC communication. Bonding over an ESPHome Bluetooth proxy may take a few seconds."
       }
     },
     "error": {
@@ -49,7 +49,7 @@
       "missing_pending_device": "The pending Shelly device information was lost. Start the add-device flow again."
     },
     "progress": {
-      "retry_pairing": "Retrying Bluetooth pairing\u2026"
+      "retry_pairing": "Retrying Bluetooth pairing…"
     }
   },
   "entity": {

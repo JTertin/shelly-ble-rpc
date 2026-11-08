@@ -17,8 +17,56 @@ AGENT_PATH = "/com/homeassistant/shelly_ble_rpc/agent"
 AGENT_CAPABILITY = "NoInputNoOutput"
 
 
+class ShellyBlueZUnavailable(Exception):
+    """Raised when the system D-Bus or the BlueZ service is not accessible.
+
+    This is normal for Home Assistant installations that rely exclusively on
+    ESPHome Bluetooth proxies, on containers without a system D-Bus socket,
+    and on adapters which are temporarily absent.
+    """
+
+
 class ShellyBlePairingError(Exception):
     """Raised when explicit BlueZ pairing fails."""
+
+
+async def async_bluez_available() -> bool:
+    """Return True only when BlueZ is reachable over the system D-Bus."""
+    try:
+        bus = await _async_open_bluez_bus()
+    except ShellyBlueZUnavailable:
+        return False
+
+    bus.disconnect()
+    return True
+
+
+async def _async_open_bluez_bus() -> MessageBus:
+    """Open the system D-Bus and verify that BlueZ is present on it.
+
+    Raises ShellyBlueZUnavailable when the bus or the BlueZ service cannot be
+    used. Callers only need to handle one exception type instead of raw
+    dbus_fast errors.
+    """
+    bus: MessageBus | None = None
+    try:
+        bus = MessageBus(bus_type=BusType.SYSTEM)
+        await bus.connect()
+        await bus.introspect(BLUEZ_SERVICE, "/")
+    except Exception as err:
+        if bus is not None:
+            try:
+                bus.disconnect()
+            except Exception:
+                pass
+        raise ShellyBlueZUnavailable(
+            "BlueZ is not available over the system D-Bus; the Shelly must be "
+            "reached through Home Assistant's Bluetooth integration, such as "
+            "an ESPHome Bluetooth proxy: "
+            f"{type(err).__name__}: {err}"
+        ) from err
+
+    return bus
 
 
 class ShellyNoInputNoOutputAgent(ServiceInterface):
@@ -109,8 +157,7 @@ async def async_get_pairing_state(
     This function is read-only and never changes pairing/bond state.
     """
     normalized = address.upper()
-    bus = MessageBus(bus_type=BusType.SYSTEM)
-    await bus.connect()
+    bus = await _async_open_bluez_bus()
 
     try:
         root_intro = await bus.introspect(BLUEZ_SERVICE, "/")
@@ -140,8 +187,7 @@ async def async_pair_device(address: str, timeout: float = 30.0) -> bool:
     Returns True when the device is confirmed paired/bonded.
     """
     normalized = address.upper()
-    bus = MessageBus(bus_type=BusType.SYSTEM)
-    await bus.connect()
+    bus = await _async_open_bluez_bus()
 
     agent = ShellyNoInputNoOutputAgent()
     agent_registered = False
@@ -295,8 +341,7 @@ async def async_pair_device(address: str, timeout: float = 30.0) -> bool:
 async def async_get_adapter_address_for_device(address: str) -> str:
     """Return the local BlueZ adapter address that owns a remote Device1."""
     normalized = address.upper()
-    bus = MessageBus(bus_type=BusType.SYSTEM)
-    await bus.connect()
+    bus = await _async_open_bluez_bus()
     try:
         root_intro = await bus.introspect(BLUEZ_SERVICE, "/")
         root_obj = bus.get_proxy_object(BLUEZ_SERVICE, "/", root_intro)
@@ -342,8 +387,7 @@ async def async_get_adapter_address_for_device(address: str) -> str:
 async def async_remove_bluez_device(address: str) -> None:
     """Remove a remote device and its cached bond from BlueZ."""
     normalized = address.upper()
-    bus = MessageBus(bus_type=BusType.SYSTEM)
-    await bus.connect()
+    bus = await _async_open_bluez_bus()
     try:
         root_intro = await bus.introspect(BLUEZ_SERVICE, "/")
         root_obj = bus.get_proxy_object(BLUEZ_SERVICE, "/", root_intro)

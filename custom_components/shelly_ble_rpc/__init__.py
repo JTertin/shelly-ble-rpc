@@ -6,10 +6,22 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import CONF_ADDRESS, PLATFORMS, CONF_PAIRING_REQUIRED
+from .const import (
+    CONF_ADDRESS,
+    PLATFORMS,
+    CONF_PAIRING_REQUIRED,
+)
 from .coordinator import ShellyBleRpcCoordinator
-from .bluez_pairing import async_get_pairing_state
-from .rpc import ShellyBleRpcClient
+from .bluez_pairing import (
+    ShellyBlueZUnavailable,
+    async_get_pairing_state,
+)
+from .rpc import (
+    ShellyBleRpcClient,
+    ShellyBleRpcPairingUnavailable,
+    ShellyBleRpcUnavailable,
+    async_bond_via_connection,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -120,6 +132,86 @@ def _is_gatt_security_state_error(err: BaseException) -> bool:
     return False
 
 
+async def _async_pair_and_validate(
+    client: ShellyBleRpcClient,
+    coordinator: ShellyBleRpcCoordinator,
+    address: str,
+    *,
+    entry_title: str,
+    bluez_available: bool,
+    bluez_device_present: bool,
+) -> None:
+    """Complete Bluetooth pairing using the path that can reach the Shelly.
+
+    Connection-validated bonding is attempted first: it works through an
+    ESPHome Bluetooth proxy, which bonds with the Shelly during its own
+    connect attempt while the Shelly accepts Bluetooth pairing, and it can
+    also complete whenever the local connection path already has a usable
+    bond. Explicit BlueZ agent pairing is only attempted afterwards, when a
+    local adapter has actually observed the Shelly, and is optional.
+    """
+    last_err: BaseException | None = None
+
+    try:
+        await async_bond_via_connection(
+            client,
+            address,
+            entry_title=entry_title,
+        )
+        await coordinator.async_config_entry_first_refresh()
+        return
+    except Exception as err:
+        last_err = err
+        _LOGGER.info(
+            "Bluetooth bonding through the connection path for '%s' did not "
+            "complete: %s: %s",
+            entry_title,
+            type(err).__name__,
+            err,
+        )
+
+    if last_err is None:
+        # Unreachable: every failure path in the block above binds an
+        # exception before control flow continues here.
+        return
+
+    if not bluez_available:
+        # Without BlueZ the connection path is the only available path.
+        raise last_err
+
+    if not bluez_device_present:
+        _LOGGER.info(
+            "BlueZ has not observed '%s' (%s); explicit BlueZ pairing is "
+            "not possible for this device right now",
+            entry_title,
+            address,
+        )
+        raise last_err
+
+    _LOGGER.info(
+        "Falling back to explicit BlueZ pairing for '%s' (%s)",
+        entry_title,
+        address,
+    )
+
+    try:
+        await client.pair_explicitly()
+        await coordinator.async_config_entry_first_refresh()
+    except Exception:
+        _LOGGER.info(
+            "Explicit BlueZ fallback pairing for '%s' did not complete; "
+            "leaving pairing_required set for a later Reload",
+            entry_title,
+        )
+        raise
+    else:
+        _LOGGER.info(
+            "Explicit BlueZ fallback pairing completed for '%s'; the "
+            "pairing_required flag can be cleared",
+            entry_title,
+        )
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ShellyBleRpcConfigEntry,
@@ -143,15 +235,33 @@ async def async_setup_entry(
     # Determine BlueZ's actual pairing state before the first RPC.
     #
     # This is read-only. We do not delete or alter any bond here.
-    device_present, bluez_paired, bluez_bonded = await async_get_pairing_state(
-        address
-    )
+    #
+    # When no system D-Bus/BlueZ stack is available (for example installations
+    # that rely exclusively on ESPHome Bluetooth proxies), bonding is performed
+    # by the proxy itself while the Shelly accepts Bluetooth pairing, so the
+    # BlueZ state is treated as unknown rather than as a setup failure.
+    try:
+        device_present, bluez_paired, bluez_bonded = (
+            await async_get_pairing_state(address)
+        )
+        bluez_available = True
+    except ShellyBlueZUnavailable as err:
+        bluez_available = False
+        device_present = bluez_paired = bluez_bonded = False
+        _LOGGER.info(
+            "No local BlueZ adapter for '%s' (%s); bonding will be handled "
+            "by the ESPHome Bluetooth proxy path: %s",
+            entry.title,
+            address,
+            err,
+        )
 
     _LOGGER.info(
-        "BlueZ state for '%s' (%s): present=%s, Paired=%s, Bonded=%s, "
-        "pairing_required=%s",
+        "BlueZ state for '%s' (%s): available=%s, present=%s, Paired=%s, "
+        "Bonded=%s, pairing_required=%s",
         entry.title,
         address,
+        bluez_available,
         device_present,
         bluez_paired,
         bluez_bonded,
@@ -160,7 +270,12 @@ async def async_setup_entry(
 
     explicit_pair_required = bool(
         entry.data.get(CONF_PAIRING_REQUIRED, False)
-        or (device_present and not bluez_paired and not bluez_bonded)
+        or (
+            bluez_available
+            and device_present
+            and not bluez_paired
+            and not bluez_bonded
+        )
     )
 
     if explicit_pair_required:
@@ -178,17 +293,28 @@ async def async_setup_entry(
             )
 
         _LOGGER.info(
-            "Config entry '%s' requires Bluetooth pairing; performing one "
-            "explicit pairing attempt",
+            "Config entry '%s' requires Bluetooth pairing; completing the "
+            "bond using the Bluetooth path that can reach the Shelly",
             entry.title,
         )
 
         try:
-            await client.pair_explicitly()
-            await coordinator.async_config_entry_first_refresh()
+            await _async_pair_and_validate(
+                client,
+                coordinator,
+                address,
+                entry_title=entry.title,
+                bluez_available=bluez_available,
+                bluez_device_present=device_present,
+            )
+        except ShellyBleRpcPairingUnavailable:
+            new_data = dict(entry.data)
+            new_data[CONF_PAIRING_REQUIRED] = True
+            hass.config_entries.async_update_entry(entry, data=new_data)
+            raise
         except Exception:
             _LOGGER.info(
-                "Explicit re-pairing for '%s' did not complete; leaving "
+                "Bluetooth bonding for '%s' did not complete; leaving "
                 "pairing_required set for a later Reload",
                 entry.title,
             )
@@ -198,14 +324,16 @@ async def async_setup_entry(
             new_data.pop(CONF_PAIRING_REQUIRED, None)
             hass.config_entries.async_update_entry(entry, data=new_data)
             _LOGGER.info(
-                "Explicit Bluetooth re-pairing completed for '%s'; cleared "
+                "Bluetooth bonding completed for '%s'; cleared "
                 "pairing_required flag",
                 entry.title,
             )
     else:
         # If BlueZ has no Device1 object yet, do not infer that the bond is
         # stale. Home Assistant discovery may simply not have recreated the
-        # object yet. Likewise, ordinary timeouts remain non-destructive.
+        # object yet, and setups that only use ESPHome Bluetooth proxies have
+        # no Device1 objects at all. Likewise, ordinary timeouts remain
+        # non-destructive.
         #
         # Keep the narrowly targeted GATT 0x0E legacy fallback as an additional
         # signal for asymmetric security state when BlueZ still reports a bond.
@@ -215,36 +343,73 @@ async def async_setup_entry(
             if not _is_gatt_security_state_error(err):
                 raise
 
-            _LOGGER.warning(
-                "Initial RPC for '%s' reached the Shelly but failed with "
-                "GATT 0x0E/Unlikely Error; attempting one explicit Bluetooth "
-                "pairing operation for asymmetric bond recovery",
-                entry.title,
-            )
-
             new_data = dict(entry.data)
             new_data[CONF_PAIRING_REQUIRED] = True
             hass.config_entries.async_update_entry(entry, data=new_data)
 
-            try:
-                await client.pair_explicitly()
-                await coordinator.async_config_entry_first_refresh()
-            except Exception:
-                _LOGGER.info(
-                    "Explicit pairing recovery for '%s' did not complete; "
-                    "pairing_required remains set for a later Reload",
+            if bluez_available and device_present:
+                _LOGGER.warning(
+                    "Initial RPC for '%s' reached the Shelly but failed with "
+                    "GATT 0x0E/Unlikely Error; attempting one explicit "
+                    "Bluetooth pairing operation for asymmetric bond recovery",
                     entry.title,
                 )
-                raise
+
+                try:
+                    await client.pair_explicitly()
+                    await coordinator.async_config_entry_first_refresh()
+                except Exception:
+                    _LOGGER.info(
+                        "Explicit pairing recovery for '%s' did not complete; "
+                        "pairing_required remains set for a later Reload",
+                        entry.title,
+                    )
+                    raise
+                else:
+                    new_data = dict(entry.data)
+                    new_data.pop(CONF_PAIRING_REQUIRED, None)
+                    hass.config_entries.async_update_entry(entry, data=new_data)
+                    _LOGGER.info(
+                        "Explicit Bluetooth pairing recovery completed for "
+                        "'%s'; cleared pairing_required flag",
+                        entry.title,
+                    )
             else:
-                new_data = dict(entry.data)
-                new_data.pop(CONF_PAIRING_REQUIRED, None)
-                hass.config_entries.async_update_entry(entry, data=new_data)
-                _LOGGER.info(
-                    "Explicit Bluetooth pairing recovery completed for '%s'; "
-                    "cleared pairing_required flag",
+                _LOGGER.warning(
+                    "Initial RPC for '%s' reached the Shelly but failed with "
+                    "GATT 0x0E/Unlikely Error; %s, so the connection path is "
+                    "given retries to bond while the Shelly is in pairing "
+                    "mode",
                     entry.title,
+                    "no local BlueZ adapter is available"
+                    if not bluez_available
+                    else "BlueZ has not observed the Shelly",
                 )
+
+                try:
+                    await async_bond_via_connection(
+                        client,
+                        address,
+                        entry_title=entry.title,
+                    )
+                    await coordinator.async_config_entry_first_refresh()
+                except Exception:
+                    _LOGGER.info(
+                        "Bluetooth bonding recovery for '%s' did not "
+                        "complete; pairing_required remains set for a later "
+                        "Reload",
+                        entry.title,
+                    )
+                    raise
+                else:
+                    new_data = dict(entry.data)
+                    new_data.pop(CONF_PAIRING_REQUIRED, None)
+                    hass.config_entries.async_update_entry(entry, data=new_data)
+                    _LOGGER.info(
+                        "Bluetooth bonding recovery completed for '%s'; "
+                        "cleared pairing_required flag",
+                        entry.title,
+                    )
 
     # Device info is mostly static. Read it once for proper device registry
     # model/firmware metadata. A failure here should not throw away a working
